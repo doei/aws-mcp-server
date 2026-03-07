@@ -28,3 +28,17 @@ export const MAX_RESPONSE_LENGTH = 50_000;
 export const SSO_LOGIN_TIMEOUT_MS = 120_000;
 export const INSIGHTS_POLL_INTERVAL_MS = 2_000;
 export const INSIGHTS_MAX_ATTEMPTS = 15;
+
+const CLOUDWATCH_ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <rect width="48" height="48" rx="8" fill="#E7157B"/>
+  <path d="M10 34 L17 24 L22 28 L28 18 L34 22 L38 14" stroke="#fff" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="38" cy="14" r="2.5" fill="#fff"/>
+</svg>`;
+
+export const CLOUDWATCH_ICONS = [
+  {
+    src: `data:image/svg+xml;base64,${Buffer.from(CLOUDWATCH_ICON_SVG).toString("base64")}`,
+    mimeType: "image/svg+xml" as const,
+    sizes: ["48x48"],
+  },
+];
