@@ -21,7 +21,6 @@ export const LOG_PREFIXES: Record<Environment, string> = {
   prod: requiredEnv("CW_PROD_LOG_PREFIX"),
 };
 
-export const DEFAULT_TIME_WINDOW_MINUTES = 60;
 export const DEFAULT_LOG_GROUP_LIMIT = 50;
 export const DEFAULT_LOG_STREAM_LIMIT = 20;
 export const MAX_RESPONSE_LENGTH = 50_000;

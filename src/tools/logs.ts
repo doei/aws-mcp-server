@@ -10,7 +10,6 @@ import { z } from "zod";
 import {
   DEFAULT_LOG_GROUP_LIMIT,
   DEFAULT_LOG_STREAM_LIMIT,
-  DEFAULT_TIME_WINDOW_MINUTES,
   type Environment,
   INSIGHTS_MAX_ATTEMPTS,
   INSIGHTS_POLL_INTERVAL_MS,
@@ -178,7 +177,7 @@ A JSON array of objects with fields:
 
 Use this tool to search, filter, or analyze log data. Supports both simple keyword searches and complex analytics.
 
-Time range: Provide start_time/end_time (ISO 8601) for an exact window, or use minutes_ago for a relative lookback from now. If both start_time and minutes_ago are given, start_time takes precedence.
+Time range: You MUST provide start_time (ISO 8601). Optionally provide end_time (defaults to now). Always choose a narrow, specific time window to avoid excessive output.
 
 Parameters:
 - environment (required): AWS environment — "dev", "staging", or "prod".
@@ -188,9 +187,8 @@ Parameters:
   - "fields @timestamp, @message | filter @message like /(?i)error/ | sort @timestamp desc | limit 20"
   - "stats count(*) as errorCount by level | sort errorCount desc"
   - "fields @timestamp, requestId, duration | filter duration > 1000 | sort duration desc"
-- start_time (optional): ISO 8601 datetime for the start of the query window, e.g. "2026-03-01T00:00:00Z". Takes precedence over minutes_ago.
+- start_time (required): ISO 8601 datetime for the start of the query window, e.g. "2026-03-07T12:00:00Z".
 - end_time (optional): ISO 8601 datetime for the end of the query window. Defaults to now.
-- minutes_ago (optional, default ${DEFAULT_TIME_WINDOW_MINUTES}): Relative lookback in minutes from end_time. Ignored when start_time is provided.
 
 Returns:
 On success: A JSON array of result rows.
@@ -207,9 +205,8 @@ If still running after ${(INSIGHTS_MAX_ATTEMPTS * INSIGHTS_POLL_INTERVAL_MS) / 1
           start_time: z
             .string()
             .datetime()
-            .optional()
             .describe(
-              'ISO 8601 datetime for the start of the query window, e.g. "2026-03-01T00:00:00Z". Takes precedence over minutes_ago.'
+              'ISO 8601 datetime for the start of the query window, e.g. "2026-03-07T12:00:00Z".'
             ),
           end_time: z
             .string()
@@ -218,27 +215,17 @@ If still running after ${(INSIGHTS_MAX_ATTEMPTS * INSIGHTS_POLL_INTERVAL_MS) / 1
             .describe(
               'ISO 8601 datetime for the end of the query window. Defaults to now.'
             ),
-          minutes_ago: z
-            .number()
-            .int()
-            .positive()
-            .default(DEFAULT_TIME_WINDOW_MINUTES)
-            .describe(
-              `Relative lookback in minutes from end_time (default ${DEFAULT_TIME_WINDOW_MINUTES}). Ignored when start_time is provided.`
-            ),
         })
         .strict(),
     },
-    async ({ environment, log_group_name, query, start_time, end_time, minutes_ago }) => {
+    async ({ environment, log_group_name, query, start_time, end_time }) => {
       const env = environment as Environment;
       const client = getClientForEnv(env);
       try {
         const endEpoch = end_time
           ? Math.floor(new Date(end_time).getTime() / 1000)
           : Math.floor(Date.now() / 1000);
-        const startEpoch = start_time
-          ? Math.floor(new Date(start_time).getTime() / 1000)
-          : endEpoch - minutes_ago * 60;
+        const startEpoch = Math.floor(new Date(start_time).getTime() / 1000);
 
         const startResponse = await client.send(
           new StartQueryCommand({

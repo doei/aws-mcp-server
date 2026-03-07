@@ -6,7 +6,7 @@ A local MCP server that connects AI agents (Cursor, Claude Desktop, etc.) to AWS
 
 - Query CloudWatch Logs across **dev**, **staging**, and **prod** environments
 - AWS SSO authentication with profile-based credentials
-- Five tools: SSO login, list log groups, list log streams, search logs, Insights queries
+- Four tools: SSO login, list log groups, list log streams, Insights queries
 - Automatic auth-error detection with helpful retry instructions
 - Response truncation at 50,000 characters to keep context manageable
 
@@ -95,23 +95,6 @@ Lists log streams in a log group, most recently active first.
 
 ---
 
-### `cloudwatch_search_logs`
-
-Searches log events using a CloudWatch filter pattern.
-
-| Parameter      | Type                          | Required | Default | Description                                      |
-|----------------|-------------------------------|----------|---------|--------------------------------------------------|
-| environment    | `"dev" \| "staging" \| "prod"` | Yes      | —       | Target AWS environment                           |
-| log_group_name | `string`                      | Yes      | —       | Full log group name                              |
-| filter_pattern | `string`                      | No       | —       | CloudWatch filter pattern (e.g. `"ERROR"`)       |
-| minutes_ago    | `number`                      | No       | 60      | Look back this many minutes (max 1440)           |
-| limit          | `number`                      | No       | 50      | Maximum events to return (max 100)               |
-| log_stream_name| `string`                      | No       | —       | Restrict to a single stream                      |
-
-**Returns:** Array of `{ timestamp, message, logStreamName }`.
-
----
-
 ### `cloudwatch_insights_query`
 
 Runs a CloudWatch Logs Insights query and polls for results.
@@ -121,7 +104,8 @@ Runs a CloudWatch Logs Insights query and polls for results.
 | environment    | `"dev" \| "staging" \| "prod"` | Yes      | —       | Target AWS environment                           |
 | log_group_name | `string`                      | Yes      | —       | Full log group name                              |
 | query          | `string`                      | Yes      | —       | Logs Insights query string                       |
-| minutes_ago    | `number`                      | No       | 60      | Query this many minutes of history               |
+| start_time     | `string`                      | Yes      | —       | ISO 8601 start of query window (e.g. `"2026-03-07T12:00:00Z"`) |
+| end_time       | `string`                      | No       | now     | ISO 8601 end of query window                     |
 
 **Returns:** Array of result row objects, or a "still running" message with the query ID.
 
