@@ -82,12 +82,14 @@ Add this file alongside your existing global `~/.cursor/mcp.json`. You don't nee
   "mcpServers": {
     "cloudwatch": {
       "env": {
-        "CW_PROJECT_CONFIG": "/absolute/path/to/this/project/cloudwatch.project.json"
+        "CW_PROJECT_CONFIG": "./cloudwatch.project.json"
       }
     }
   }
 }
 ```
+
+`CW_PROJECT_CONFIG` can be a relative or absolute path. Relative paths are resolved against the MCP server process's working directory, which Cursor sets to the workspace root when launching from a per-project `.cursor/mcp.json` — so `./cloudwatch.project.json` refers to a file at the root of your project.
 
 If `CW_PROJECT_CONFIG` is not set, all tools work exactly as before.
 

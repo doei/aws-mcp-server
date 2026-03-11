@@ -1,4 +1,5 @@
 import { readFileSync } from "fs";
+import { resolve } from "path";
 
 const ENVIRONMENTS = ["dev", "staging", "prod"] as const;
 export type Environment = (typeof ENVIRONMENTS)[number];
@@ -43,8 +44,9 @@ function loadProjectConfig(): ProjectConfig | null {
   const configPath = process.env.CW_PROJECT_CONFIG;
   if (!configPath) return null;
 
+  const resolvedPath = resolve(configPath);
   try {
-    const raw = readFileSync(configPath, "utf-8");
+    const raw = readFileSync(resolvedPath, "utf-8");
     const parsed = JSON.parse(raw) as unknown;
 
     if (
@@ -53,7 +55,7 @@ function loadProjectConfig(): ProjectConfig | null {
       !Array.isArray((parsed as { logGroups?: unknown }).logGroups)
     ) {
       console.error(
-        `CW_PROJECT_CONFIG: invalid format in "${configPath}" — expected { logGroups: [{ suffix, description }] }`
+        `CW_PROJECT_CONFIG: invalid format in "${resolvedPath}" — expected { logGroups: [{ suffix, description }] }`
       );
       return null;
     }
@@ -70,7 +72,7 @@ function loadProjectConfig(): ProjectConfig | null {
         logGroups.push(entry as ProjectLogGroup);
       } else {
         console.error(
-          `CW_PROJECT_CONFIG: skipping invalid logGroups entry in "${configPath}":`,
+          `CW_PROJECT_CONFIG: skipping invalid logGroups entry in "${resolvedPath}":`,
           entry
         );
       }
@@ -78,7 +80,7 @@ function loadProjectConfig(): ProjectConfig | null {
 
     return { logGroups };
   } catch (err) {
-    console.error(`CW_PROJECT_CONFIG: failed to load "${configPath}":`, err);
+    console.error(`CW_PROJECT_CONFIG: failed to load "${resolvedPath}":`, err);
     return null;
   }
 }
