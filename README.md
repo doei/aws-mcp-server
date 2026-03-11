@@ -6,7 +6,10 @@ A local MCP server that connects AI agents (Cursor, Claude Desktop, etc.) to AWS
 
 - Query CloudWatch Logs across **dev**, **staging**, and **prod** environments
 - AWS SSO authentication with profile-based credentials
-- Four tools: SSO login, list log groups, list log streams, Insights queries
+- Five tools: SSO login, list log groups, list log streams, Insights queries, sample logs
+- Query **multiple log groups in a single call** (up to 10)
+- Accepts **ISO 8601 or Unix epoch seconds** for time ranges
+- **Project config** to bake known log group names into tool descriptions automatically
 - Automatic auth-error detection with helpful retry instructions
 - Response truncation at 50,000 characters to keep context manageable
 
@@ -26,7 +29,7 @@ npm run build
 
 ## Cursor MCP Configuration
 
-Add the following to `~/.cursor/mcp.json`:
+Add the following to `~/.cursor/mcp.json` (global) or `<project>/.cursor/mcp.json` (per-project):
 
 ```json
 {
@@ -53,6 +56,41 @@ Restart Cursor after saving `mcp.json`.
 
 Set these environment variables to your AWS SSO profile names (e.g. `export CW_DEV_PROFILE=myorg-dev`).
 
+## Project Config (Optional)
+
+Set `CW_PROJECT_CONFIG` to the path of a JSON file that describes your project's log groups. When set, the MCP server reads this file at startup and bakes the log group names into tool descriptions — so agents know which log groups to query without a discovery round-trip.
+
+**`cloudwatch.project.json`** (place in your project repo):
+
+```json
+{
+  "logGroups": [
+    { "suffix": "myapp", "description": "Main application logs" },
+    { "suffix": "myapp/worker", "description": "Background worker logs" }
+  ]
+}
+```
+
+Suffixes are appended to the environment's log group prefix at runtime (e.g. `my-org/prod/myapp`).
+
+**Per-project MCP config** (`.cursor/mcp.json` in the consuming repo):
+
+```json
+{
+  "mcpServers": {
+    "cloudwatch": {
+      "command": "node",
+      "args": ["/path/to/cloudwatch-mcp-server/dist/index.js"],
+      "env": {
+        "CW_PROJECT_CONFIG": "/path/to/your/cloudwatch.project.json"
+      }
+    }
+  }
+}
+```
+
+If `CW_PROJECT_CONFIG` is not set, all tools work exactly as before.
+
 ## Tools
 
 ### `cloudwatch_sso_login`
@@ -74,7 +112,7 @@ Lists CloudWatch log groups with optional name-prefix filtering.
 | Parameter   | Type                          | Required | Default | Description                              |
 |-------------|-------------------------------|----------|---------|------------------------------------------|
 | environment | `"dev" \| "staging" \| "prod"` | Yes      | —       | Target AWS environment                   |
-| prefix      | `string`                      | No       | —       | Filter by log group name prefix          |
+| suffix      | `string`                      | No       | —       | Filter by log group name suffix          |
 | limit       | `number`                      | No       | 50      | Maximum number of log groups to return   |
 
 **Returns:** Array of `{ logGroupName, retentionInDays }`.
@@ -97,24 +135,43 @@ Lists log streams in a log group, most recently active first.
 
 ### `cloudwatch_insights_query`
 
-Runs a CloudWatch Logs Insights query and polls for results.
+Runs a CloudWatch Logs Insights query and polls for results. Supports querying multiple log groups in a single call.
 
-| Parameter      | Type                          | Required | Default | Description                                      |
-|----------------|-------------------------------|----------|---------|--------------------------------------------------|
-| environment    | `"dev" \| "staging" \| "prod"` | Yes      | —       | Target AWS environment                           |
-| log_group_name | `string`                      | Yes      | —       | Full log group name                              |
-| query          | `string`                      | Yes      | —       | Logs Insights query string                       |
-| start_time     | `string`                      | Yes      | —       | ISO 8601 start of query window (e.g. `"2026-03-07T12:00:00Z"`) |
-| end_time       | `string`                      | No       | now     | ISO 8601 end of query window                     |
+| Parameter       | Type                              | Required | Default | Description                                                        |
+|-----------------|-----------------------------------|----------|---------|--------------------------------------------------------------------|
+| environment     | `"dev" \| "staging" \| "prod"`     | Yes      | —       | Target AWS environment                                             |
+| log_group_names | `string \| string[]`              | Yes      | —       | Log group name or array of up to 10 log group names                |
+| query           | `string`                          | Yes      | —       | Logs Insights query string                                         |
+| start_time      | `string \| number`                | Yes      | —       | ISO 8601 string or Unix epoch seconds                              |
+| end_time        | `string \| number`                | No       | now     | ISO 8601 string or Unix epoch seconds                              |
 
 **Returns:** Array of result row objects, or a "still running" message with the query ID.
 
 **Example queries:**
 ```
 fields @timestamp, @message | sort @timestamp desc | limit 20
-stats count(*) by bin(5m) | sort bin(5m) desc
-filter @message like /ERROR/ | stats count() by level
+fields @timestamp, @message | filter @message like /(?i)error/ | sort @timestamp desc | limit 50
+fields @timestamp, @message | filter someField = "value" | sort @timestamp desc | limit 50
+stats count(*) by someField | sort count(*) desc
+fields @timestamp, requestId, duration | filter duration > 1000 | sort duration desc
 ```
+
+---
+
+### `cloudwatch_sample_logs`
+
+Fetches a small number of recent log entries from one or more log groups. Use this to discover what structured fields are available before writing a targeted `cloudwatch_insights_query`.
+
+| Parameter       | Type                          | Required | Default | Description                                         |
+|-----------------|-------------------------------|----------|---------|-----------------------------------------------------|
+| environment     | `"dev" \| "staging" \| "prod"` | Yes      | —       | Target AWS environment                              |
+| log_group_names | `string \| string[]`          | Yes      | —       | Log group name or array of up to 10 log group names |
+| minutes         | `number`                      | No       | 60      | How many minutes back to look                       |
+| limit           | `number`                      | No       | 5       | Number of entries to return (max 20)                |
+
+**Returns:** Array of recent log entries with `@timestamp` and `@message` fields.
+
+---
 
 ## Authentication Errors
 
