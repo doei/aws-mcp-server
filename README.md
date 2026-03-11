@@ -75,14 +75,14 @@ Suffixes are appended to the environment's log group prefix at runtime (e.g. `my
 
 **Per-project MCP config** (`.cursor/mcp.json` in the consuming repo):
 
+Add this file alongside your existing global `~/.cursor/mcp.json`. You don't need to repeat the full server config — Cursor merges project-level and global config. Only the `env` block is needed to pass the extra variable:
+
 ```json
 {
   "mcpServers": {
     "cloudwatch": {
-      "command": "node",
-      "args": ["/path/to/cloudwatch-mcp-server/dist/index.js"],
       "env": {
-        "CW_PROJECT_CONFIG": "/path/to/your/cloudwatch.project.json"
+        "CW_PROJECT_CONFIG": "/absolute/path/to/this/project/cloudwatch.project.json"
       }
     }
   }
