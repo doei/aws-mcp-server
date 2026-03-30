@@ -6,17 +6,17 @@ import { clearClientCache } from "../services/aws.js";
 
 export function registerSsoTools(server: McpServer): void {
   server.registerTool(
-    "cloudwatch_sso_login",
+    "aws_sso_login",
     {
-      title: "CloudWatch SSO Login",
+      title: "AWS SSO Login",
       description: `Initiates AWS SSO login for the specified environment, opening a browser window for the user to authenticate.
 
-Use this tool when any CloudWatch tool returns an authentication error, or when credentials appear to be expired or missing.
+Use this tool when any AWS tool returns an authentication error, or when credentials appear to be expired or missing.
 
 **Important agent instructions:**
 1. Call this tool with the affected environment.
 2. IMMEDIATELY inform the user: "A browser window has opened for AWS SSO login. Please approve the request in your browser, then let me know when you're done."
-3. Do NOT retry the original CloudWatch tool until the user explicitly confirms they have completed the browser login.
+3. Do NOT retry the original AWS tool until the user explicitly confirms they have completed the browser login.
 4. Once the user confirms, retry the original tool.
 
 Parameters:

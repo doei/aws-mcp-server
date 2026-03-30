@@ -1,15 +1,16 @@
-# cloudwatch-mcp-server
+# aws-mcp-server
 
-A local MCP server that connects AI agents (Cursor, Claude Desktop, etc.) to AWS CloudWatch Logs across multiple AWS accounts using SSO authentication.
+A local MCP server that connects AI agents (Cursor, Claude Desktop, etc.) to AWS services across multiple AWS accounts using SSO authentication.
 
 ## Features
 
-- Query CloudWatch Logs across **dev**, **staging**, and **prod** environments
+- **CloudWatch Logs** — query logs across **dev**, **staging**, and **prod** environments
+- **SQS** — list queues, send messages, inspect queue attributes
 - AWS SSO authentication with profile-based credentials
-- Five tools: SSO login, list log groups, list log streams, Insights queries, sample logs
+- Eight tools: SSO login, list log groups, list log streams, Insights queries, sample logs, list queues, send message, get queue attributes
 - Query **multiple log groups in a single call** (up to 10)
 - Accepts **ISO 8601 or Unix epoch seconds** for time ranges
-- **Project config** to bake known log group names into tool descriptions automatically
+- **Project config** to bake known log group names and queue names into tool descriptions
 - Automatic auth-error detection with helpful retry instructions
 - Response truncation at 50,000 characters to keep context manageable
 
@@ -22,7 +23,7 @@ A local MCP server that connects AI agents (Cursor, Claude Desktop, etc.) to AWS
 ## Setup
 
 ```bash
-cd cloudwatch-mcp-server
+cd aws-mcp-server
 npm install
 npm run build
 ```
@@ -34,15 +35,15 @@ Add the following to `~/.cursor/mcp.json` (global) or `<project>/.cursor/mcp.jso
 ```json
 {
   "mcpServers": {
-    "cloudwatch": {
+    "aws": {
       "command": "node",
-      "args": ["/absolute/path/to/cloudwatch-mcp-server/dist/index.js"]
+      "args": ["/absolute/path/to/aws-mcp-server/dist/index.js"]
     }
   }
 }
 ```
 
-Replace `/absolute/path/to/cloudwatch-mcp-server` with the actual path on your system (e.g. `/Users/yourname/cloudwatch-mcp-server`).
+Replace `/absolute/path/to/aws-mcp-server` with the actual path on your system (e.g. `/Users/yourname/aws-mcp-server`).
 
 Restart Cursor after saving `mcp.json`.
 
@@ -50,28 +51,41 @@ Restart Cursor after saving `mcp.json`.
 
 | Environment | Env Var              |
 |-------------|----------------------|
-| dev         | `CW_DEV_PROFILE`     |
-| staging     | `CW_STAGING_PROFILE` |
-| prod        | `CW_PROD_PROFILE`    |
+| dev         | `AWS_DEV_PROFILE`    |
+| staging     | `AWS_STAGING_PROFILE`|
+| prod        | `AWS_PROD_PROFILE`   |
 
-Set these environment variables to your AWS SSO profile names (e.g. `export CW_DEV_PROFILE=myorg-dev`).
+Set these environment variables to your AWS SSO profile names (e.g. `export AWS_DEV_PROFILE=myorg-dev`).
+
+Additionally set:
+
+| Env Var              | Description                                        |
+|----------------------|----------------------------------------------------|
+| `AWS_REGION`         | AWS region for all API calls (e.g. `us-east-1`)    |
+| `CW_DEV_LOG_PREFIX`  | CloudWatch log group prefix for dev environment    |
+| `CW_STAGING_LOG_PREFIX` | CloudWatch log group prefix for staging         |
+| `CW_PROD_LOG_PREFIX` | CloudWatch log group prefix for prod environment   |
 
 ## Project Config (Optional)
 
-Set `CW_PROJECT_CONFIG` to the path of a JSON file that describes your project's log groups. When set, the MCP server reads this file at startup and bakes the log group names into tool descriptions — so agents know which log groups to query without a discovery round-trip.
+Set `AWS_PROJECT_CONFIG` to the path of a JSON file that describes your project's log groups and queues. When set, the MCP server reads this file at startup and bakes the names into tool descriptions — so agents know which resources to use without a discovery round-trip.
 
-**`cloudwatch.project.json`** (place in your project repo):
+**`aws.project.json`** (place in your project repo):
 
 ```json
 {
   "logGroups": [
     { "suffix": "myapp", "description": "Main application logs" },
     { "suffix": "myapp/worker", "description": "Background worker logs" }
+  ],
+  "queues": [
+    { "name": "order-processing", "description": "Processes new orders" },
+    { "name": "email-notifications", "description": "Sends email notifications" }
   ]
 }
 ```
 
-Suffixes are appended to the environment's log group prefix at runtime (e.g. `my-org/prod/myapp`).
+Log group suffixes are appended to the environment's log group prefix at runtime (e.g. `my-org/prod/myapp`). Queue names appear in SQS tool descriptions for agent discoverability.
 
 **Per-project MCP config** (`.cursor/mcp.json` in the consuming repo):
 
@@ -80,22 +94,22 @@ Add this file alongside your existing global `~/.cursor/mcp.json`. You don't nee
 ```json
 {
   "mcpServers": {
-    "cloudwatch": {
+    "aws": {
       "env": {
-        "CW_PROJECT_CONFIG": "./cloudwatch.project.json"
+        "AWS_PROJECT_CONFIG": "./aws.project.json"
       }
     }
   }
 }
 ```
 
-`CW_PROJECT_CONFIG` can be a relative or absolute path. Relative paths are resolved against the MCP server process's working directory, which Cursor sets to the workspace root when launching from a per-project `.cursor/mcp.json` — so `./cloudwatch.project.json` refers to a file at the root of your project.
+`AWS_PROJECT_CONFIG` can be a relative or absolute path. Relative paths are resolved against the MCP server process's working directory, which Cursor sets to the workspace root when launching from a per-project `.cursor/mcp.json` — so `./aws.project.json` refers to a file at the root of your project.
 
-If `CW_PROJECT_CONFIG` is not set, all tools work exactly as before.
+If `AWS_PROJECT_CONFIG` is not set, all tools work exactly as before.
 
 ## Tools
 
-### `cloudwatch_sso_login`
+### `aws_sso_login`
 
 Initiates AWS SSO login for an environment, opening a browser window.
 
@@ -175,6 +189,69 @@ Fetches a small number of recent log entries from one or more log groups. Use th
 
 ---
 
+### `sqs_list_queues`
+
+Lists SQS queues in the specified environment.
+
+| Parameter   | Type                          | Required | Default | Description                            |
+|-------------|-------------------------------|----------|---------|----------------------------------------|
+| environment | `"dev" \| "staging" \| "prod"` | Yes      | —       | Target AWS environment                 |
+| prefix      | `string`                      | No       | —       | Filter queues by name prefix           |
+| limit       | `number`                      | No       | 50      | Maximum number of queues to return     |
+
+**Returns:** Array of `{ queueUrl, queueName }`.
+
+---
+
+### `sqs_send_message`
+
+Sends a message to an SQS queue. Supports standard and FIFO queues, message attributes, and delayed delivery.
+
+| Parameter          | Type                          | Required | Default | Description                                                             |
+|--------------------|-------------------------------|----------|---------|-------------------------------------------------------------------------|
+| environment        | `"dev" \| "staging" \| "prod"` | Yes      | —       | Target AWS environment                                                  |
+| queue_url          | `string`                      | Yes      | —       | Full SQS queue URL                                                      |
+| message_body       | `string`                      | Yes      | —       | Message content (plain text or JSON)                                    |
+| message_group_id   | `string`                      | No       | —       | Message group ID (required for FIFO queues)                             |
+| deduplication_id   | `string`                      | No       | —       | Deduplication token (required for FIFO without content-based dedup)     |
+| delay_seconds      | `number`                      | No       | —       | Delay delivery by N seconds (0–900)                                     |
+| message_attributes | `Record<string, {type, value}>` | No     | —       | Custom message attributes (`type`: "String", "Number", or "Binary")    |
+
+**Returns:** `{ messageId, sequenceNumber?, md5OfMessageBody }`.
+
+---
+
+### `sqs_get_queue_attributes`
+
+Retrieves attributes of an SQS queue — message counts, configuration, and ARN.
+
+| Parameter   | Type                          | Required | Description                            |
+|-------------|-------------------------------|----------|----------------------------------------|
+| environment | `"dev" \| "staging" \| "prod"` | Yes      | Target AWS environment                 |
+| queue_url   | `string`                      | Yes      | Full SQS queue URL                     |
+
+**Returns:** Queue attributes including message counts, retention period, visibility timeout, FIFO status, and more.
+
+---
+
 ## Authentication Errors
 
-If any tool returns an authentication error, the agent will automatically suggest calling `cloudwatch_sso_login`. Once you approve the browser login, retry the original request.
+If any tool returns an authentication error, the agent will automatically suggest calling `aws_sso_login`. Once you approve the browser login, retry the original request.
+
+## Migrating from v1 (cloudwatch-mcp-server)
+
+If you're upgrading from the original `cloudwatch-mcp-server`:
+
+1. **Env vars renamed** — shared variables now use the `AWS_` prefix:
+   - `CW_REGION` → `AWS_REGION`
+   - `CW_DEV_PROFILE` → `AWS_DEV_PROFILE`
+   - `CW_STAGING_PROFILE` → `AWS_STAGING_PROFILE`
+   - `CW_PROD_PROFILE` → `AWS_PROD_PROFILE`
+   - `CW_PROJECT_CONFIG` → `AWS_PROJECT_CONFIG`
+   - CloudWatch-specific vars (`CW_DEV_LOG_PREFIX`, etc.) are unchanged.
+
+2. **SSO tool renamed** — `cloudwatch_sso_login` → `aws_sso_login`.
+
+3. **Project config** — the JSON file now supports an optional `queues` array alongside `logGroups`. Existing configs with only `logGroups` continue to work.
+
+4. **MCP config key** — consider renaming `"cloudwatch"` to `"aws"` in your `mcp.json`.
