@@ -1,4 +1,5 @@
 import { CloudWatchLogsClient } from "@aws-sdk/client-cloudwatch-logs";
+import { SQSClient } from "@aws-sdk/client-sqs";
 import { fromIni } from "@aws-sdk/credential-providers";
 import {
   Environment,
@@ -7,23 +8,38 @@ import {
   REGION,
 } from "../constants.js";
 
-const clientCache = new Map<string, CloudWatchLogsClient>();
+const cwClientCache = new Map<string, CloudWatchLogsClient>();
+const sqsClientCache = new Map<string, SQSClient>();
 
-export function getClientForEnv(env: Environment): CloudWatchLogsClient {
+export function getCloudWatchClientForEnv(env: Environment): CloudWatchLogsClient {
   const profile = PROFILES[env];
-  const cached = clientCache.get(profile);
+  const cached = cwClientCache.get(profile);
   if (cached) return cached;
 
   const client = new CloudWatchLogsClient({
     region: REGION,
     credentials: fromIni({ profile }),
   });
-  clientCache.set(profile, client);
+  cwClientCache.set(profile, client);
+  return client;
+}
+
+export function getSqsClientForEnv(env: Environment): SQSClient {
+  const profile = PROFILES[env];
+  const cached = sqsClientCache.get(profile);
+  if (cached) return cached;
+
+  const client = new SQSClient({
+    region: REGION,
+    credentials: fromIni({ profile }),
+  });
+  sqsClientCache.set(profile, client);
   return client;
 }
 
 export function clearClientCache(): void {
-  clientCache.clear();
+  cwClientCache.clear();
+  sqsClientCache.clear();
 }
 
 export function isAuthError(error: unknown): boolean {

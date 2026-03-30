@@ -18,7 +18,7 @@ import {
   PROFILES,
 } from "../constants.js";
 import {
-  getClientForEnv,
+  getCloudWatchClientForEnv,
   isAuthError,
   truncateResponse,
 } from "../services/aws.js";
@@ -59,7 +59,7 @@ function authErrorResponse(env: Environment) {
     content: [
       {
         type: "text" as const,
-        text: `Authentication failed for environment "${env}". Please call the cloudwatch_sso_login tool with environment "${env}" to refresh credentials, then retry this request.`,
+        text: `Authentication failed for environment "${env}". Please call the aws_sso_login tool with environment "${env}" to refresh credentials, then retry this request.`,
       },
     ],
   };
@@ -86,7 +86,7 @@ async function runInsightsQuery(
   startEpoch: number,
   endEpoch: number
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  const client = getClientForEnv(env);
+  const client = getCloudWatchClientForEnv(env);
 
   const startResponse = await client.send(
     new StartQueryCommand({
@@ -197,7 +197,7 @@ A JSON array of objects with fields:
     },
     async ({ environment, suffix, limit }) => {
       const env = environment as Environment;
-      const client = getClientForEnv(env);
+      const client = getCloudWatchClientForEnv(env);
       const prefix = suffix
         ? `${LOG_PREFIXES[env]}/${suffix}`
         : LOG_PREFIXES[env];
@@ -257,7 +257,7 @@ A JSON array of objects with fields:
     },
     async ({ environment, log_group_name, limit }) => {
       const env = environment as Environment;
-      const client = getClientForEnv(env);
+      const client = getCloudWatchClientForEnv(env);
       try {
         const response = await client.send(
           new DescribeLogStreamsCommand({
