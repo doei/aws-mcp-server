@@ -66,7 +66,7 @@ Additionally set:
 
 ## Project Config (Optional)
 
-Drop a single file named **`aws-mcp.json`** at the root of your project to describe its log groups and queues. The MCP server picks it up automatically — no per-project `.cursor/mcp.json` required.
+Drop a single file named **`aws-mcp.json`** at the root of your project to describe its log groups and queues.
 
 ```json
 {
