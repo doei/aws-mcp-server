@@ -7,10 +7,11 @@ A local MCP server that connects AI agents (Cursor, Claude Desktop, etc.) to AWS
 - **CloudWatch Logs** — query logs across **dev**, **staging**, and **prod** environments
 - **SQS** — list queues, send messages, inspect queue attributes
 - AWS SSO authentication with profile-based credentials
-- Eight tools: SSO login, list log groups, list log streams, Insights queries, sample logs, list queues, send message, get queue attributes
+- Seven tools: SSO login, list log groups, list log streams, Insights queries, list queues, send message, get queue attributes
 - Query **multiple log groups in a single call** (up to 10)
 - Accepts **ISO 8601 or Unix epoch seconds** for time ranges
-- **Project config** to bake known log group names and queue names into tool descriptions
+- **Project config** (`aws-mcp.json` at your repo root, auto-discovered) bakes known log group names and queue names into tool descriptions
+- Config parse warnings surfaced to the agent (baked into tool descriptions) and to stderr at startup
 - Automatic auth-error detection with helpful retry instructions
 - Response truncation at 50,000 characters to keep context manageable
 
@@ -61,51 +62,36 @@ Additionally set:
 
 | Env Var              | Description                                        |
 |----------------------|----------------------------------------------------|
-| `AWS_REGION`         | AWS region for all API calls (e.g. `us-east-1`)    |
-| `CW_DEV_LOG_PREFIX`  | CloudWatch log group prefix for dev environment    |
-| `CW_STAGING_LOG_PREFIX` | CloudWatch log group prefix for staging         |
-| `CW_PROD_LOG_PREFIX` | CloudWatch log group prefix for prod environment   |
+| `AWS_REGION`         | AWS region for all API calls (e.g. `eu-west-1`)    |
 
 ## Project Config (Optional)
 
-Set `AWS_PROJECT_CONFIG` to the path of a JSON file that describes your project's log groups and queues. When set, the MCP server reads this file at startup and bakes the names into tool descriptions — so agents know which resources to use without a discovery round-trip.
-
-**`aws.project.json`** (place in your project repo):
+Drop a single file named **`aws-mcp.json`** at the root of your project to describe its log groups and queues. The MCP server picks it up automatically — no per-project `.cursor/mcp.json` required.
 
 ```json
 {
   "logGroups": [
-    { "suffix": "myapp", "description": "Main application logs" },
-    { "suffix": "myapp/worker", "description": "Background worker logs" }
+    { "logGroupName": "myorg/dev/myapp", "description": "Main application logs (dev)" },
+    { "logGroupName": "myorg/prod/myapp", "description": "Main application logs (prod)" }
   ],
   "queues": [
-    { "name": "order-processing", "description": "Processes new orders" },
-    { "name": "email-notifications", "description": "Sends email notifications" }
+    { "queueName": "order-processing", "description": "Processes new orders" },
+    { "queueName": "email-notifications", "description": "Sends email notifications" }
   ]
 }
 ```
 
-Log group suffixes are appended to the environment's log group prefix at runtime (e.g. `my-org/prod/myapp`). Queue names appear in SQS tool descriptions for agent discoverability.
+Names and descriptions are baked into tool descriptions for agent discoverability, so the agent doesn't need a discovery round-trip to know which resources are relevant.
 
-**Per-project MCP config** (`.cursor/mcp.json` in the consuming repo):
+### Discovery
 
-Add this file alongside your existing global `~/.cursor/mcp.json`. You don't need to repeat the full server config — Cursor merges project-level and global config. Only the `env` block is needed to pass the extra variable:
+On startup the server resolves the config file in this order:
 
-```json
-{
-  "mcpServers": {
-    "aws": {
-      "env": {
-        "AWS_PROJECT_CONFIG": "./aws.project.json"
-      }
-    }
-  }
-}
-```
+1. If `AWS_PROJECT_CONFIG` is set, that path is used (absolute or relative to the server's CWD). Useful for absolute paths or unusual layouts.
+2. Otherwise, the server walks up from its current working directory looking for `aws-mcp.json`, stopping at the first match or at the enclosing git repository root.
+3. If nothing is found, all tools work without project context.
 
-`AWS_PROJECT_CONFIG` can be a relative or absolute path. Relative paths are resolved against the MCP server process's working directory, which Cursor sets to the workspace root when launching from a per-project `.cursor/mcp.json` — so `./aws.project.json` refers to a file at the root of your project.
-
-If `AWS_PROJECT_CONFIG` is not set, all tools work exactly as before.
+The discovery result and any parse warnings are logged to stderr at startup, and warnings are also injected into tool descriptions so the agent can surface them to you.
 
 ## Tools
 
@@ -128,7 +114,7 @@ Lists CloudWatch log groups with optional name-prefix filtering.
 | Parameter   | Type                          | Required | Default | Description                              |
 |-------------|-------------------------------|----------|---------|------------------------------------------|
 | environment | `"dev" \| "staging" \| "prod"` | Yes      | —       | Target AWS environment                   |
-| suffix      | `string`                      | No       | —       | Filter by log group name suffix          |
+| prefix      | `string`                      | No       | —       | Filter by log group name prefix          |
 | limit       | `number`                      | No       | 50      | Maximum number of log groups to return   |
 
 **Returns:** Array of `{ logGroupName, retentionInDays }`.
@@ -166,26 +152,14 @@ Runs a CloudWatch Logs Insights query and polls for results. Supports querying m
 **Example queries:**
 ```
 fields @timestamp, @message | sort @timestamp desc | limit 20
+fields @timestamp, @message | sort @timestamp desc | limit 5
 fields @timestamp, @message | filter @message like /(?i)error/ | sort @timestamp desc | limit 50
 fields @timestamp, @message | filter someField = "value" | sort @timestamp desc | limit 50
 stats count(*) by someField | sort count(*) desc
 fields @timestamp, requestId, duration | filter duration > 1000 | sort duration desc
 ```
 
----
-
-### `cloudwatch_sample_logs`
-
-Fetches a small number of recent log entries from one or more log groups. Use this to discover what structured fields are available before writing a targeted `cloudwatch_insights_query`.
-
-| Parameter       | Type                          | Required | Default | Description                                         |
-|-----------------|-------------------------------|----------|---------|-----------------------------------------------------|
-| environment     | `"dev" \| "staging" \| "prod"` | Yes      | —       | Target AWS environment                              |
-| log_group_names | `string \| string[]`          | Yes      | —       | Log group name or array of up to 10 log group names |
-| minutes         | `number`                      | No       | 60      | How many minutes back to look                       |
-| limit           | `number`                      | No       | 5       | Number of entries to return (max 20)                |
-
-**Returns:** Array of recent log entries with `@timestamp` and `@message` fields.
+To discover available fields in an unfamiliar log group, run a small recent query (e.g. `limit 5` over the last hour) and inspect the raw `@message` content before writing structured filters.
 
 ---
 
@@ -248,10 +222,15 @@ If you're upgrading from the original `cloudwatch-mcp-server`:
    - `CW_STAGING_PROFILE` → `AWS_STAGING_PROFILE`
    - `CW_PROD_PROFILE` → `AWS_PROD_PROFILE`
    - `CW_PROJECT_CONFIG` → `AWS_PROJECT_CONFIG`
-   - CloudWatch-specific vars (`CW_DEV_LOG_PREFIX`, etc.) are unchanged.
 
-2. **SSO tool renamed** — `cloudwatch_sso_login` → `aws_sso_login`.
+2. **Log group prefixes removed** — `CW_DEV_LOG_PREFIX`, `CW_STAGING_LOG_PREFIX`, and `CW_PROD_LOG_PREFIX` are no longer needed. Log groups in the project config now use full names instead of suffixes relative to a prefix.
 
-3. **Project config** — the JSON file now supports an optional `queues` array alongside `logGroups`. Existing configs with only `logGroups` continue to work.
+3. **SSO tool renamed** — `cloudwatch_sso_login` → `aws_sso_login`.
 
-4. **MCP config key** — consider renaming `"cloudwatch"` to `"aws"` in your `mcp.json`.
+4. **Project config filename** — rename the file from `aws.project.json` to `aws-mcp.json` and place it at the root of your project. The old name is still discovered for backward compatibility but emits a deprecation warning. With the new name, the server auto-discovers the file by walking up from its CWD to the enclosing git root, so the per-project `.cursor/mcp.json` (whose only job was to set `AWS_PROJECT_CONFIG=./aws.project.json`) is no longer needed and can be deleted. `AWS_PROJECT_CONFIG` still works as an explicit override if you need it.
+
+5. **Project config field names** — the JSON file supports an optional `queues` array alongside `logGroups`. Each log group entry uses `logGroupName` (the full CloudWatch log group name), and each queue entry uses `queueName`. The legacy `suffix` and `name` fields are still accepted for backward compatibility but will emit deprecation warnings — these warnings appear in stderr at startup and are injected into tool descriptions so the agent can surface them.
+
+6. **`cloudwatch_sample_logs` removed** — the tool was a thin wrapper around `cloudwatch_insights_query`. To inspect raw log entries, run `cloudwatch_insights_query` with a small `limit` (e.g. `fields @timestamp, @message | sort @timestamp desc | limit 5`) and a recent `start_time`.
+
+7. **MCP config key** — consider renaming `"cloudwatch"` to `"aws"` in your `mcp.json`.

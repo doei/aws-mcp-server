@@ -1,5 +1,5 @@
-import { readFileSync } from "fs";
-import { resolve } from "path";
+import { existsSync, readFileSync } from "fs";
+import { dirname, join, resolve } from "path";
 
 const ENVIRONMENTS = ["dev", "staging", "prod"] as const;
 export type Environment = (typeof ENVIRONMENTS)[number];
@@ -18,12 +18,6 @@ export const PROFILES: Record<Environment, string> = {
   prod: requiredEnv("AWS_PROD_PROFILE"),
 };
 
-export const LOG_PREFIXES: Record<Environment, string> = {
-  dev: requiredEnv("CW_DEV_LOG_PREFIX"),
-  staging: requiredEnv("CW_STAGING_LOG_PREFIX"),
-  prod: requiredEnv("CW_PROD_LOG_PREFIX"),
-};
-
 export const DEFAULT_LOG_GROUP_LIMIT = 50;
 export const DEFAULT_LOG_STREAM_LIMIT = 20;
 export const MAX_RESPONSE_LENGTH = 50_000;
@@ -32,12 +26,12 @@ export const INSIGHTS_POLL_INTERVAL_MS = 2_000;
 export const INSIGHTS_MAX_ATTEMPTS = 15;
 
 export interface ProjectLogGroup {
-  suffix: string;
+  logGroupName: string;
   description: string;
 }
 
 export interface ProjectQueue {
-  name: string;
+  queueName: string;
   description: string;
 }
 
@@ -46,70 +40,255 @@ export interface ProjectConfig {
   queues: ProjectQueue[];
 }
 
-function loadProjectConfig(): ProjectConfig | null {
-  const configPath = process.env.AWS_PROJECT_CONFIG;
-  if (!configPath) return null;
+interface LoadedProjectConfig {
+  config: ProjectConfig | null;
+  warnings: string[];
+  discoveredPath: string | null;
+  discoverySource: "env" | "auto" | null;
+}
 
-  const resolvedPath = resolve(configPath);
-  try {
-    const raw = readFileSync(resolvedPath, "utf-8");
-    const parsed = JSON.parse(raw) as unknown;
-
-    if (typeof parsed !== "object" || parsed === null) {
-      console.error(
-        `AWS_PROJECT_CONFIG: invalid format in "${resolvedPath}" — expected { logGroups?: [...], queues?: [...] }`
-      );
-      return null;
-    }
-
-    const obj = parsed as Record<string, unknown>;
-
-    const logGroups: ProjectLogGroup[] = [];
-    if (Array.isArray(obj.logGroups)) {
-      for (const entry of obj.logGroups) {
-        if (
-          typeof entry === "object" &&
-          entry !== null &&
-          typeof (entry as { suffix?: unknown }).suffix === "string" &&
-          typeof (entry as { description?: unknown }).description === "string"
-        ) {
-          logGroups.push(entry as ProjectLogGroup);
-        } else {
-          console.error(
-            `AWS_PROJECT_CONFIG: skipping invalid logGroups entry in "${resolvedPath}":`,
-            entry
-          );
-        }
-      }
-    }
-
-    const queues: ProjectQueue[] = [];
-    if (Array.isArray(obj.queues)) {
-      for (const entry of obj.queues) {
-        if (
-          typeof entry === "object" &&
-          entry !== null &&
-          typeof (entry as { name?: unknown }).name === "string" &&
-          typeof (entry as { description?: unknown }).description === "string"
-        ) {
-          queues.push(entry as ProjectQueue);
-        } else {
-          console.error(
-            `AWS_PROJECT_CONFIG: skipping invalid queues entry in "${resolvedPath}":`,
-            entry
-          );
-        }
-      }
-    }
-
-    return { logGroups, queues };
-  } catch (err) {
-    console.error(`AWS_PROJECT_CONFIG: failed to load "${resolvedPath}":`, err);
+function parseLogGroupEntry(
+  entry: unknown,
+  warnings: string[]
+): ProjectLogGroup | null {
+  if (typeof entry !== "object" || entry === null) {
+    warnings.push(`logGroups entry is not an object: ${JSON.stringify(entry)}`);
     return null;
+  }
+
+  const record = entry as Record<string, unknown>;
+  const description = record.description;
+  if (typeof description !== "string") {
+    warnings.push(
+      `logGroups entry missing string "description": ${JSON.stringify(entry)}`
+    );
+    return null;
+  }
+
+  if (typeof record.logGroupName === "string") {
+    return { logGroupName: record.logGroupName, description };
+  }
+
+  if (typeof record.name === "string") {
+    warnings.push(
+      `logGroups entry uses deprecated "name" field — rename to "logGroupName" (value: "${record.name}")`
+    );
+    return { logGroupName: record.name, description };
+  }
+
+  if (typeof record.suffix === "string") {
+    warnings.push(
+      `logGroups entry uses legacy "suffix" field — rename to "logGroupName" (value: "${record.suffix}")`
+    );
+    return { logGroupName: record.suffix, description };
+  }
+
+  warnings.push(
+    `logGroups entry missing "logGroupName": ${JSON.stringify(entry)}`
+  );
+  return null;
+}
+
+function parseQueueEntry(
+  entry: unknown,
+  warnings: string[]
+): ProjectQueue | null {
+  if (typeof entry !== "object" || entry === null) {
+    warnings.push(`queues entry is not an object: ${JSON.stringify(entry)}`);
+    return null;
+  }
+
+  const record = entry as Record<string, unknown>;
+  const description = record.description;
+  if (typeof description !== "string") {
+    warnings.push(
+      `queues entry missing string "description": ${JSON.stringify(entry)}`
+    );
+    return null;
+  }
+
+  if (typeof record.queueName === "string") {
+    return { queueName: record.queueName, description };
+  }
+
+  if (typeof record.name === "string") {
+    warnings.push(
+      `queues entry uses deprecated "name" field — rename to "queueName" (value: "${record.name}")`
+    );
+    return { queueName: record.name, description };
+  }
+
+  warnings.push(`queues entry missing "queueName": ${JSON.stringify(entry)}`);
+  return null;
+}
+
+/** Filenames searched for during auto-discovery, in priority order. */
+const PROJECT_CONFIG_FILENAMES: Array<{ name: string; deprecated: boolean }> = [
+  { name: "aws-mcp.json", deprecated: false },
+  { name: "aws.project.json", deprecated: true },
+];
+
+interface DiscoveredConfig {
+  path: string;
+  source: "env" | "auto";
+  deprecatedFilename: boolean;
+}
+
+/**
+ * Walks up from the current working directory looking for a config file.
+ * Stops at a git repository boundary or the filesystem root.
+ */
+function discoverProjectConfigFile(): DiscoveredConfig | null {
+  let dir = process.cwd();
+  while (true) {
+    for (const candidate of PROJECT_CONFIG_FILENAMES) {
+      const candidatePath = join(dir, candidate.name);
+      if (existsSync(candidatePath)) {
+        return {
+          path: candidatePath,
+          source: "auto",
+          deprecatedFilename: candidate.deprecated,
+        };
+      }
+    }
+
+    if (existsSync(join(dir, ".git"))) return null;
+
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
 }
 
-export const PROJECT_CONFIG = loadProjectConfig();
+function resolveProjectConfigSource(): DiscoveredConfig | null {
+  const envPath = process.env.AWS_PROJECT_CONFIG;
+  if (envPath) {
+    return {
+      path: resolve(envPath),
+      source: "env",
+      deprecatedFilename: false,
+    };
+  }
+  return discoverProjectConfigFile();
+}
+
+function loadProjectConfig(): LoadedProjectConfig {
+  const discovered = resolveProjectConfigSource();
+  if (!discovered) {
+    return {
+      config: null,
+      warnings: [],
+      discoveredPath: null,
+      discoverySource: null,
+    };
+  }
+
+  const resolvedPath = discovered.path;
+  const warnings: string[] = [];
+
+  if (discovered.deprecatedFilename) {
+    warnings.push(
+      `discovered config at "${resolvedPath}" — "aws.project.json" is deprecated, rename to "aws-mcp.json"`
+    );
+  }
+
+  const baseResult = {
+    discoveredPath: resolvedPath,
+    discoverySource: discovered.source,
+  };
+
+  let raw: string;
+  try {
+    raw = readFileSync(resolvedPath, "utf-8");
+  } catch (err) {
+    warnings.push(
+      `failed to read "${resolvedPath}": ${err instanceof Error ? err.message : String(err)}`
+    );
+    return { config: null, warnings, ...baseResult };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    warnings.push(
+      `failed to parse "${resolvedPath}" as JSON: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return { config: null, warnings, ...baseResult };
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
+    warnings.push(
+      `invalid format in "${resolvedPath}" — expected an object with optional "logGroups" and "queues" arrays`
+    );
+    return { config: null, warnings, ...baseResult };
+  }
+
+  const obj = parsed as Record<string, unknown>;
+
+  const logGroups: ProjectLogGroup[] = [];
+  if (Array.isArray(obj.logGroups)) {
+    for (const entry of obj.logGroups) {
+      const parsedEntry = parseLogGroupEntry(entry, warnings);
+      if (parsedEntry) logGroups.push(parsedEntry);
+    }
+  } else if (obj.logGroups !== undefined) {
+    warnings.push(`"logGroups" is not an array — ignoring`);
+  }
+
+  const queues: ProjectQueue[] = [];
+  if (Array.isArray(obj.queues)) {
+    for (const entry of obj.queues) {
+      const parsedEntry = parseQueueEntry(entry, warnings);
+      if (parsedEntry) queues.push(parsedEntry);
+    }
+  } else if (obj.queues !== undefined) {
+    warnings.push(`"queues" is not an array — ignoring`);
+  }
+
+  return { config: { logGroups, queues }, warnings, ...baseResult };
+}
+
+const loaded = loadProjectConfig();
+
+export const PROJECT_CONFIG = loaded.config;
+export const PROJECT_CONFIG_WARNINGS = loaded.warnings;
+export const PROJECT_CONFIG_PATH = loaded.discoveredPath;
+export const PROJECT_CONFIG_SOURCE = loaded.discoverySource;
+
+if (loaded.discoveredPath) {
+  const sourceLabel =
+    loaded.discoverySource === "env"
+      ? "AWS_PROJECT_CONFIG env var"
+      : "auto-discovered";
+  console.error(
+    `aws-mcp-server: project config loaded from "${loaded.discoveredPath}" (${sourceLabel})`
+  );
+} else {
+  console.error(
+    `aws-mcp-server: no project config found (searched cwd "${process.cwd()}" and parents up to git root for aws-mcp.json; set AWS_PROJECT_CONFIG to override)`
+  );
+}
+
+if (loaded.warnings.length > 0) {
+  console.error("=".repeat(60));
+  console.error("aws-mcp-server: project config loaded with warnings:");
+  for (const warning of loaded.warnings) {
+    console.error(`  - ${warning}`);
+  }
+  console.error("=".repeat(60));
+}
+
+/**
+ * Returns a warning block to inject into tool descriptions when
+ * the project config had load issues. Visible to the agent so it can
+ * surface problems to the user.
+ */
+export function projectConfigWarningsSection(): string {
+  if (PROJECT_CONFIG_WARNINGS.length === 0) return "";
+  const lines = PROJECT_CONFIG_WARNINGS.map((w) => `  - ${w}`);
+  return `\n\nProject config warnings (surface these to the user if relevant):\n${lines.join("\n")}`;
+}
 
 function svgToIconEntry(svg: string) {
   return [

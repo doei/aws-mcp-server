@@ -13,9 +13,9 @@ import {
   type Environment,
   INSIGHTS_MAX_ATTEMPTS,
   INSIGHTS_POLL_INTERVAL_MS,
-  LOG_PREFIXES,
   PROJECT_CONFIG,
   PROFILES,
+  projectConfigWarningsSection,
 } from "../constants.js";
 import {
   getCloudWatchClientForEnv,
@@ -69,16 +69,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Builds the "Known log groups" section injected into tool descriptions when CW_PROJECT_CONFIG is set. */
+/** Builds the "Known log groups" section injected into tool descriptions when AWS_PROJECT_CONFIG is set. */
 function projectLogGroupsSection(): string {
   if (!PROJECT_CONFIG || PROJECT_CONFIG.logGroups.length === 0) return "";
   const lines = PROJECT_CONFIG.logGroups.map(
-    (g) => `  - {prefix}/${g.suffix} — ${g.description}`
+    (g) => `  - ${g.logGroupName} — ${g.description}`
   );
-  return `\n\nKnown log groups for this project (replace {prefix} with the environment's log group prefix):\n${lines.join("\n")}`;
+  return `\n\nKnown log groups for this project (prefer these verbatim; only fall back to cloudwatch_list_log_groups if the user references a group not listed here):\n${lines.join("\n")}`;
 }
 
-/** Runs a CloudWatch Insights query and polls until complete. Shared by insights and sample_logs tools. */
+/** Runs a CloudWatch Insights query and polls until complete. */
 async function runInsightsQuery(
   env: Environment,
   logGroupNames: string[],
@@ -166,25 +166,25 @@ export function registerLogsTools(server: McpServer): void {
       title: "List CloudWatch Log Groups",
       description: `Lists CloudWatch Logs log groups in the specified AWS environment.
 
-Results are automatically scoped to the environment's log group prefix (${Object.entries(LOG_PREFIXES).map(([e, p]) => `${e}: "${p}"`).join(", ")}). You can optionally narrow further with a suffix filter.
+Prefer the known log groups baked into cloudwatch_insights_query's description over calling this tool — use this only when the user references a log group outside the project config, or for genuine discovery.
 
 Parameters:
 - environment (required): AWS environment — "dev", "staging", or "prod".
-- suffix (optional): Additional filter appended to the environment prefix. Example: "my-service" would match "${LOG_PREFIXES.staging}/my-service" in staging.
+- prefix (optional): Log group name prefix to filter by, e.g. "myorg/dev" or "myorg/dev/myapp".
 - limit (optional, default ${DEFAULT_LOG_GROUP_LIMIT}): Maximum number of log groups to return.
 
 Returns:
 A JSON array of objects with fields:
 - logGroupName (string): Full name of the log group.
-- retentionInDays (number | null): Configured retention period in days, or null if retention is indefinite.`,
+- retentionInDays (number | null): Configured retention period in days, or null if retention is indefinite.${projectLogGroupsSection()}${projectConfigWarningsSection()}`,
       inputSchema: z
         .object({
           environment: environmentSchema,
-          suffix: z
+          prefix: z
             .string()
             .optional()
             .describe(
-              'Additional filter appended to environment prefix, e.g. "my-service" or "my-service/worker"'
+              'Log group name prefix to filter results, e.g. "mbrella/dev" or "mbrella/dev/trench"'
             ),
           limit: z
             .number()
@@ -195,16 +195,13 @@ A JSON array of objects with fields:
         })
         .strict(),
     },
-    async ({ environment, suffix, limit }) => {
+    async ({ environment, prefix, limit }) => {
       const env = environment as Environment;
       const client = getCloudWatchClientForEnv(env);
-      const prefix = suffix
-        ? `${LOG_PREFIXES[env]}/${suffix}`
-        : LOG_PREFIXES[env];
       try {
         const response = await client.send(
           new DescribeLogGroupsCommand({
-            logGroupNamePrefix: prefix,
+            ...(prefix ? { logGroupNamePrefix: prefix } : {}),
             limit,
           })
         );
@@ -297,15 +294,18 @@ You can query multiple log groups simultaneously by passing an array of names �
 
 Time range: You MUST provide start_time (ISO 8601 or Unix epoch seconds). Optionally provide end_time (defaults to now). Always choose a narrow, specific time window to avoid excessive output.
 
+Field discovery: if you don't know what structured fields a log group exposes, start with a small recent query (e.g. \`fields @timestamp, @message | sort @timestamp desc | limit 5\` over the last hour) to inspect the raw messages before writing a targeted query.
+
 Parameters:
 - environment (required): AWS environment — "dev", "staging", or "prod".
 - log_group_names (required): Log group name (string) or array of up to 10 log group names.
 - query (required): CloudWatch Logs Insights query string. See examples below.
 - start_time (required): Start of the query window — ISO 8601 string (e.g. "2026-03-07T12:00:00Z") or Unix epoch seconds (e.g. 1741363200).
-- end_time (optional): End of the query window — ISO 8601 or Unix epoch seconds. Defaults to now.${projectLogGroupsSection()}
+- end_time (optional): End of the query window — ISO 8601 or Unix epoch seconds. Defaults to now.${projectLogGroupsSection()}${projectConfigWarningsSection()}
 
 Example queries:
 - Recent logs:      fields @timestamp, @message | sort @timestamp desc | limit 20
+- Field discovery:  fields @timestamp, @message | sort @timestamp desc | limit 5
 - Keyword search:   fields @timestamp, @message | filter @message like /keyword/ | sort @timestamp desc | limit 50
 - Error search:     fields @timestamp, @message | filter @message like /(?i)error/ | sort @timestamp desc | limit 50
 - Filter by field:  fields @timestamp, @message | filter someField = "value" | sort @timestamp desc | limit 50
@@ -350,54 +350,4 @@ If still running after ${(INSIGHTS_MAX_ATTEMPTS * INSIGHTS_POLL_INTERVAL_MS) / 1
     }
   );
 
-  server.registerTool(
-    "cloudwatch_sample_logs",
-    {
-      title: "Sample CloudWatch Logs",
-      description: `Fetches a small number of recent log entries from one or more log groups. Use this to discover what structured fields are available before writing a targeted query.
-
-The result shows raw log entries including any JSON fields present in @message. Once you know the field names, use cloudwatch_insights_query with structured filters for precise searches.
-
-Parameters:
-- environment (required): AWS environment — "dev", "staging", or "prod".
-- log_group_names (required): Log group name (string) or array of up to 10 log group names.
-- minutes (optional, default 60): How many minutes back to look for recent entries.
-- limit (optional, default 5): Number of log entries to return (max 20).${projectLogGroupsSection()}
-
-Returns:
-A JSON array of recent log entries with @timestamp and @message fields.`,
-      inputSchema: z
-        .object({
-          environment: environmentSchema,
-          log_group_names: logGroupNamesSchema,
-          minutes: z
-            .number()
-            .int()
-            .positive()
-            .default(60)
-            .describe("How many minutes back to look for recent entries (default 60)"),
-          limit: z
-            .number()
-            .int()
-            .min(1)
-            .max(20)
-            .default(5)
-            .describe("Number of log entries to return, max 20 (default 5)"),
-        })
-        .strict(),
-    },
-    async ({ environment, log_group_names, minutes, limit }) => {
-      const env = environment as Environment;
-      try {
-        const endEpoch = Math.floor(Date.now() / 1000);
-        const startEpoch = endEpoch - minutes * 60;
-        const names = toLogGroupNamesArray(log_group_names);
-        const query = `fields @timestamp, @message | sort @timestamp desc | limit ${limit}`;
-        return await runInsightsQuery(env, names, query, startEpoch, endEpoch);
-      } catch (error) {
-        if (isAuthError(error)) return authErrorResponse(env);
-        throw error;
-      }
-    }
-  );
 }

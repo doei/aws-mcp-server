@@ -9,6 +9,7 @@ import {
   type Environment,
   PROFILES,
   PROJECT_CONFIG,
+  projectConfigWarningsSection,
 } from "../constants.js";
 import {
   getSqsClientForEnv,
@@ -38,9 +39,9 @@ function authErrorResponse(env: Environment) {
 function projectQueuesSection(): string {
   if (!PROJECT_CONFIG || PROJECT_CONFIG.queues.length === 0) return "";
   const lines = PROJECT_CONFIG.queues.map(
-    (q) => `  - ${q.name} — ${q.description}`
+    (q) => `  - ${q.queueName} — ${q.description}`
   );
-  return `\n\nKnown queues for this project:\n${lines.join("\n")}`;
+  return `\n\nKnown queues for this project (prefer these verbatim; only fall back to sqs_list_queues if the user references a queue not listed here):\n${lines.join("\n")}`;
 }
 
 export function registerSqsTools(server: McpServer): void {
@@ -55,7 +56,7 @@ Use this tool to discover available queues and their URLs before sending message
 Parameters:
 - environment (required): AWS environment — "dev", "staging", or "prod".
 - prefix (optional): Filter queues whose names begin with this prefix.
-- limit (optional, default 50): Maximum number of queues to return.${projectQueuesSection()}
+- limit (optional, default 50): Maximum number of queues to return.${projectQueuesSection()}${projectConfigWarningsSection()}
 
 Returns:
 A JSON array of objects with fields:
@@ -117,7 +118,7 @@ Parameters:
 - message_group_id (optional): Required for FIFO queues. Tag that specifies the message belongs to a specific group.
 - deduplication_id (optional): Token for deduplication of sent messages. Required for FIFO queues without content-based deduplication.
 - delay_seconds (optional): Delay delivery of the message by this many seconds (0–900).
-- message_attributes (optional): Key-value pairs of custom message attributes. Each attribute needs a type ("String", "Number", or "Binary") and a value.${projectQueuesSection()}
+- message_attributes (optional): Key-value pairs of custom message attributes. Each attribute needs a type ("String", "Number", or "Binary") and a value.${projectQueuesSection()}${projectConfigWarningsSection()}
 
 Returns:
 A JSON object with the message ID and, for FIFO queues, the sequence number.`,
@@ -217,7 +218,7 @@ Useful for checking if a queue has messages waiting, its retention policy, or wh
 
 Parameters:
 - environment (required): AWS environment — "dev", "staging", or "prod".
-- queue_url (required): Full SQS queue URL.${projectQueuesSection()}
+- queue_url (required): Full SQS queue URL.${projectQueuesSection()}${projectConfigWarningsSection()}
 
 Returns:
 A JSON object with queue attributes including:
