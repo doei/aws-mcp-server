@@ -1,5 +1,5 @@
 import { CloudWatchLogsClient } from "@aws-sdk/client-cloudwatch-logs";
-import { SQSClient } from "@aws-sdk/client-sqs";
+import { GetQueueUrlCommand, SQSClient } from "@aws-sdk/client-sqs";
 import { fromIni } from "@aws-sdk/credential-providers";
 import {
   Environment,
@@ -10,6 +10,7 @@ import {
 
 const cwClientCache = new Map<string, CloudWatchLogsClient>();
 const sqsClientCache = new Map<string, SQSClient>();
+const queueUrlCache = new Map<string, string>();
 
 export function getCloudWatchClientForEnv(env: Environment): CloudWatchLogsClient {
   const profile = PROFILES[env];
@@ -37,9 +38,38 @@ export function getSqsClientForEnv(env: Environment): SQSClient {
   return client;
 }
 
+/**
+ * Resolves an SQS queue name to its full queue URL using the AWS SDK.
+ * The URL is derived from the AWS profile's credentials (account, partition, region),
+ * so the agent never needs to know the account ID. Results are cached per
+ * (environment, name) for the lifetime of the process.
+ */
+export async function resolveQueueUrl(
+  env: Environment,
+  queueName: string
+): Promise<string> {
+  const cacheKey = `${env}:${queueName}`;
+  const cached = queueUrlCache.get(cacheKey);
+  if (cached) return cached;
+
+  const client = getSqsClientForEnv(env);
+  const response = await client.send(
+    new GetQueueUrlCommand({ QueueName: queueName })
+  );
+  const url = response.QueueUrl;
+  if (!url) {
+    throw new Error(
+      `GetQueueUrl returned no QueueUrl for "${queueName}" in environment "${env}"`
+    );
+  }
+  queueUrlCache.set(cacheKey, url);
+  return url;
+}
+
 export function clearClientCache(): void {
   cwClientCache.clear();
   sqsClientCache.clear();
+  queueUrlCache.clear();
 }
 
 export function isAuthError(error: unknown): boolean {
