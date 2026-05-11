@@ -1,6 +1,6 @@
 {
   "name": "aws-mcp-server",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Local MCP server connecting AI agents to AWS services (CloudWatch Logs, SQS) via SSO",
   "main": "dist/index.js",
   "scripts": {
